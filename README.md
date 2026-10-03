@@ -146,3 +146,31 @@ data/state.json      Runtime data (created on first write)
 2. `PRICE <GHS/loaf>` per site on the first driver report (until then the COO reports revenue in loaves and says so).
 3. `STOCK MAM <bags>` / `STOCK NKZ <bags>` / `STOCK TCH <bags>` — opens the days-of-cover engine.
 4. Test the brain: `PROD MAM 80 S1-4000 S2-3800` → must answer **−200 loaves (−2.5%) → ⚠️ Minor Loss, Manager flagged**.
+
+---
+
+## 🔒 Security model
+
+**WhatsApp webhook (fail-closed — refuses work until configured):**
+
+| Control | Behaviour |
+|---|---|
+| `WA_APP_SECRET` env | **Required** for `POST /webhook`. Every payload is verified with `X-Hub-Signature-256` = HMAC-SHA256(raw body, secret), compared in constant time. No secret → `403 webhook disabled` — the webhook cannot be abused to inject fake data. |
+| Sender allow-list | Only digits-normalised numbers configured in **/admin → WhatsApp** (CEO + MAM/NKZ/TCH managers) are processed. Unknown numbers are logged (`webhook-reject`) and answered with a refusal. **No numbers configured = every sender rejected.** |
+| `WA_VERIFY_TOKEN` env (or /admin field) | Used for the Meta GET handshake. **No built-in default** — if unset, the handshake is refused, so the webhook URL can't be "verified" by a stranger. |
+| Rate limit | 20 requests/min per IP on `/webhook`. |
+
+**Admin & write APIs:**
+
+- `/api/config`, `/api/reset`, `/api/demo`, `/api/ingest` and `/admin` require the admin password (`BAKEGUARD_ADMIN_PASS` env — set it in Render; a default ships in code and should be changed).
+- Every `POST /api/*` from a browser must be **same-origin** (cross-origin requests get `403`), and is rate-limited to 30/min per IP. Non-browser clients (curl/cron — no `Origin` header) are allowed but still admin-gated + rate-limited.
+- `/api/reset` writes an automatic **pre-reset backup** (`state_backup_pre_reset_<ts>.json`) before wiping history.
+
+**Platform hardening:**
+
+- Security headers on every response: `Content-Security-Policy: default-src 'self'` (inline scripts only), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`.
+- `/robots.txt` disallows the whole site (ops data is not for search engines).
+- `state.json` is written `0600`; the WhatsApp token field in /admin is **write-only** (never echoed back to the page).
+- `/ceo` and `/admin` accesses are logged with client IP.
+
+**Deploy checklist (Render):** set `WA_APP_SECRET` (Meta App Secret) and `BAKEGUARD_ADMIN_PASS`; optionally `WA_VERIFY_TOKEN`. Then enter the CEO + manager numbers in /admin **before** pointing the Meta webhook at the site — until then the webhook accepts nothing.
