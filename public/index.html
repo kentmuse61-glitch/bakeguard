@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BakeGuard — HOPE Special Bread</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">🛡️ <b>BakeGuard</b><span class="sub">· HOPE Special Bread · Virtual COO</span></div>
+  <div class="head-right">
+    <a class="headerlink" href="/ceo">👑 CEO view</a>
+    <div id="wa" class="pill">…</div>
+    <div id="date" class="muted"></div>
+  </div>
+</header>
+
+<nav id="tabs">
+  <button data-tab="dash" class="on">📊 Dashboard</button>
+  <button data-tab="prod">🏭 Production</button>
+  <button data-tab="drivers">🚚 Drivers</button>
+  <button data-tab="debt">💰 Kiosk Debt</button>
+  <button data-tab="stock">📦 Stock</button>
+  <button data-tab="radar">🧭 Expansion Radar</button>
+  <button data-tab="brief">🌙 10 PM Briefing</button>
+  <button data-tab="reports">📈 Reports</button>
+  <button data-tab="log">💬 Message Log</button>
+</nav>
+
+<main id="view"><div class="muted">Loading…</div></main>
+
+<section id="composer">
+  <div id="chat" class="chat"></div>
+  <div class="compose">
+    <select id="from"></select>
+    <input id="msg" placeholder="Type a WhatsApp message, e.g.  PROD MAM 80 S1-4000 S2-3800" autocomplete="off">
+    <button id="send">Send ➤</button>
+  </div>
+  <div id="samples" class="samples"></div>
+</section>
+
+<footer class="sitelink">
+<a href="/ceo">👑 CEO view (demo)</a> &nbsp;·&nbsp; <a href="/admin">⚙️ Admin</a>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

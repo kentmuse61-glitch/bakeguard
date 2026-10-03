@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CEO View — HOPE Special Bread</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="ceo">
+  <div class="kicker">👑 CEO View · HOPE Special Bread</div>
+  <h1>Today in 3 numbers</h1>
+  <div class="sub" id="date">loading…</div>
+  <div id="cards"><div class="ceo-card"><div class="lbl">loading…</div></div></div>
+  <div class="ceo-strip" id="strip"></div>
+  <div class="ceo-footer">
+    Full operations dashboard → <a href="/">BakeGuard</a> &nbsp;·&nbsp; refreshes every 60s
+  </div>
+</div>
+<script>
+'use strict';
+const fmt = n => (n == null ? '—' : Math.round(n).toLocaleString('en-US'));
+const ghs = n => (n == null ? '—' : 'GHS ' + Math.round(n).toLocaleString('en-US'));
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function render() {
+  const S = await (await fetch('/api/state')).json();
+  const s = S.summary, r = s.readiness;
+  const siteName = c => (S.params.sites[c] || {}).name || c;
+  document.getElementById('date').textContent = s.date;
+
+  // ---------- CARD 1: MONEY MISSING TODAY ----------
+  let missing = 0, culprits = [];
+  for (const d of Object.values(s.drivers)) {
+    if (d.gap <= 0) continue;
+    const price = d.cash > 0 && d.ghs ? d.ghs / d.cash : s.price;
+    const g = price != null ? d.gap * price : null;
+    if (g != null) { missing += g; culprits.push({ name: d.driver, loaves: d.gap, g }); }
+  }
+  for (const rem of S.remittances || []) {
+    if (rem.date === s.date && rem.actual < rem.expected) {
+      missing += (rem.expected - rem.actual);
+      culprits.push({ name: rem.driver + ' (remittance short)', loaves: null, g: rem.expected - rem.actual });
+    }
+  }
+  culprits.sort((a, b) => b.g - a.g);
+  const top = culprits[0];
+  const card1 = `
+  <div class="ceo-card ${missing > 0 ? 'bad' : 'good'}">
+    <div class="lbl">💸 Money missing today</div>
+    <div class="big">${ghs(missing)}</div>
+    <div class="who">${top ? `Who: <b>${esc(top.name)}</b>${top.loaves ? ` — ${fmt(top.loaves)} loaves unaccounted` : ''}` : 'All cash accounted for. No gaps.'}</div>
+    <div class="note">Driver gaps (loaves that left the bakery with no cash, credit or return) + remittance shortfalls, valued at each driver's site price. + ${ghs(s.debtTotal)} kiosk debt still outstanding.</div>
+  </div>`;
+
+  // ---------- CARD 2: LOST DOUGH (7 DAYS) ----------
+  const w = s.week7 || { days: 0, net: { variancePct: 0, variance: 0 }, sites: {} };
+  let worst = null;
+  for (const [code, st] of Object.entries(w.sites)) {
+    if (st.expected > 0 && (!worst || st.variancePct > worst.pct)) worst = { code, pct: st.variancePct, loaves: st.variance };
+  }
+  const doughGhs = w.net.variance != null && s.price != null ? w.net.variance * s.price : null;
+  const card2 = `
+  <div class="ceo-card ${w.net.variancePct > 5 ? 'bad' : w.net.variancePct > 2 ? 'warn' : 'good'}">
+    <div class="lbl">🫓 Lost dough — last ${w.days} days</div>
+    <div class="big">−${w.net.variancePct.toFixed(1)}%</div>
+    <div class="who">${worst ? `Worst: <b>${esc(siteName(worst.code))} −${worst.pct.toFixed(1)}%</b> (${fmt(worst.loaves)} loaves)` : 'All sites within tolerance'}</div>
+    <div class="note">= ${fmt(w.net.variance)} loaves baked in 7 days that never reached a customer${doughGhs != null ? ` ≈ ${ghs(doughGhs)}` : ''}. Rule: 0–2% OK · 2–5% minor · &gt;5% = scale error / theft, never the other way round.</div>
+  </div>`;
+
+  // ---------- CARD 3: STOCK ALERT ----------
+  let low = null;
+  for (const [code, st] of Object.entries(s.sites)) {
+    if (st.cover != null && (!low || st.cover < low.cover)) low = { code, cover: st.cover, stock: st.stock };
+  }
+  const card3 = low == null ? `
+    <div class="ceo-card good"><div class="lbl">📦 Stock alert</div><div class="big">No data</div>
+    <div class="note">Send STOCK &lt;site&gt; &lt;bags&gt; each morning to enable cover tracking.</div></div>`
+  : low.cover < 1 ? `
+    <div class="ceo-card bad"><div class="lbl">📦 Stock alert</div><div class="big">${esc(siteName(low.code))} ends in ${low.cover.toFixed(1)} days</div>
+    <div class="who"><b>${low.stock} bags left</b> — below a day of production</div>
+    <div class="note">Reorder fires now (draft in the Stock tab). If a neighbour site has cover, move flour today: check NKZ/TCH cover in the dashboard.</div></div>`
+  : low.cover < 3 ? `
+    <div class="ceo-card warn"><div class="lbl">📦 Stock alert</div><div class="big">${esc(siteName(low.code))}: ${low.cover.toFixed(1)} days cover</div>
+    <div class="who">${low.stock} bags — reorder threshold is 3 days</div>
+    <div class="note">Send the reorder draft before it drops under 1 day.</div></div>`
+  : `
+    <div class="ceo-card good"><div class="lbl">📦 Stock alert</div><div class="big">All sites safe</div>
+    <div class="who">Lowest cover: ${esc(siteName(low.code))} at ${low.cover.toFixed(1)} days (${low.stock} bags)</div>
+    <div class="note">Reorder trigger: below 20 bags OR below 3 days of cover.</div></div>`;
+
+  // ---------- STRIP: readiness + silent sites + debt ----------
+  const blind = Object.entries(s.spots || {}).filter(([, v]) => v && v.level === 'blind').map(([c]) => c);
+  const delayed = Object.entries(s.spots || {}).filter(([, v]) => v && v.level === 'delayed').map(([c]) => c);
+  const strip = `
+  <div class="chip">⚙️ Scale-up readiness<b>${r.score}/100 ${r.score >= 80 ? '· scale-ready' : r.score >= 60 ? '· watch' : '· fix first'}</b></div>
+  <div class="chip">📵 Silent at 10 PM<b>${blind.length ? blind.map(c => siteName(c)).join(', ') : delayed.length ? 'none (delayed: ' + delayed.map(c => siteName(c)).join(', ') + ')' : 'none'}</b></div>
+  <div class="chip">💰 Kiosk debt<b>${ghs(s.debtTotal)} ${s.debtOverdue ? '· ' + s.debtOverdue + ' overdue' : ''}</b></div>
+  <div class="chip">🌅 Tomorrow (forecast)<b>${s.forecast.production ? fmt(s.forecast.production) + ' loaves' : '—'} ${s.forecast.cashGhs ? '· ' + ghs(s.forecast.cashGhs) : ''}</b></div>`;
+
+  document.getElementById('cards').innerHTML = card1 + card2 + card3;
+  document.getElementById('strip').innerHTML = strip;
+}
+render().catch(e => document.getElementById('cards').innerHTML = '<div class="ceo-card bad"><div class="big">⚠️ ' + esc(e.message) + '</div><div class="note">Is the server running?</div></div>');
+setInterval(() => render().catch(() => {}), 60000);
+</script>
+</body>
+</html>

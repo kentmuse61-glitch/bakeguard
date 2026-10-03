@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin — BakeGuard</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">🛡️ <b>BakeGuard</b><span class="sub">· Admin (engineer-only)</span></div>
+  <div class="head-right"><a class="headerlink" href="/">← Dashboard</a><a class="headerlink" href="/ceo">👑 CEO</a></div>
+</header>
+<main id="view"><div class="muted" style="padding:18px 22px">Loading…</div></main>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s == null ? '' : s).replace(/[&<>\"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+let S = null, PL = [], curSite = 'MAM', pendingBody = null;
+const api = (path, body) => fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {})
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+const flash = m => { const d = document.createElement('div'); d.className = 'bdg ok'; d.textContent = m; d.style.cssText = 'position:fixed;top:14px;right:14px;z-index:99;padding:8px 14px'; document.body.appendChild(d); setTimeout(() => d.remove(), 1400); };
+const fmtV = v => (v == null ? 'unset' : v);
+
+const SITE_FIELDS = [
+  { k: 'name', label: 'Site name', type: 'text', step: null },
+  { k: 'yield', label: 'Yield (loaves / bag)', type: 'number', step: 'any' },
+  { k: 'batch', label: 'Batch size (bags)', type: 'number', step: 'any' },
+  { k: 'session', label: 'Session size (bags)', type: 'number', step: 'any' },
+  { k: 'price', label: 'Price (GHS / loaf)', type: 'number', step: 'any', ph: 'inherit network' },
+  { k: 'reorder', label: 'Reorder trigger (bags)', type: 'number', step: 'any' },
+  { k: 'coverTarget', label: 'Days-of-cover target', type: 'number', step: 'any' },
+  { k: 'varMinor', label: 'Variance minor (%)', type: 'number', step: 'any' },
+  { k: 'varCrit', label: 'Variance critical (%)', type: 'number', step: 'any' },
+  { k: 'driverGap', label: 'Driver gap (%)', type: 'number', step: 'any' },
+];
+const NET_FIELDS = [
+  { k: 'price', label: 'Network default price (GHS/loaf)', type: 'number', step: 'any', ph: 'unset' },
+  { k: 'debtDays', label: 'Debt alert (days)', type: 'number', step: 'any' },
+  { k: 'debtEscalateDays', label: 'Debt escalate (days)', type: 'number', step: 'any' },
+  { k: 'remGap', label: 'Remittance gap (%)', type: 'number', step: 'any' },
+];
+
+async function refresh() {
+  const [st, pl] = await Promise.all([api('/api/state'), api('/api/param-log?limit=10')]);
+  S = st; PL = (pl.log || []).slice().reverse();
+  if (!S.params.sites[curSite]) curSite = Object.keys(S.params.sites)[0];
+  render();
+}
+
+const pf = (c, x, f) => `<label class="field">${esc(f.label)}<input type="${f.type}" ${f.step ? `step="${f.step}"` : ''} ${f.ph ? `placeholder="${f.ph}"` : ''} id="pf-${c}-${f.k}" value="${esc(x[f.k] == null ? '' : x[f.k])}"></label>`;
+const pfnet = (n, f) => `<label class="field">${esc(f.label)}<input type="${f.type}" ${f.step ? `step="${f.step}"` : ''} ${f.ph ? `placeholder="${f.ph}"` : ''} id="pf-net-${f.k}" value="${esc(n[f.k] == null ? '' : n[f.k])}"></label>`;
+
+function render() {
+  const sites = S.params.sites, net = S.params.network || {};
+  const driverCodes = [...new Set((S.trips || []).map(t => t.driver))].sort();
+  const driverRows = driverCodes.length ? driverCodes.map(drv => `<tr><td>${esc(drv)}</td><td><select data-driver="${esc(drv)}"><option value="">unmapped (network price)</option>${Object.keys(sites).map(c => `<option value="${c}" ${(S.params.drivers || {})[drv] === c ? 'selected' : ''}>${c} — ${esc(sites[c].name)}</option>`).join('')}</select></td></tr>`).join('') : '<tr><td colspan="2" class="muted">No drivers in history yet.</td></tr>';
+  const wa = S.config.whatsapp, mgr = wa.managers || {}, origin = location.origin;
+  const last = PL.length ? PL[0] : null;
+
+  $('#view').innerHTML = `
+  <div style="padding:18px 22px;max-width:1200px;margin:0 auto">
+  <div class="admin-warn">⚠️ <b>Engineer/admin area.</b> The CEO never sees this page — the owner's screens are <a href="/ceo" style="color:var(--blue)">/ceo</a> and <a href="/" style="color:var(--blue)">/</a>. Everything here changes the engine's math or erases evidence. Reset in particular is <b>unrecoverable</b>.</div>
+
+  <h2>Parameters — per site, audited</h2>
+  <div class="card">
+    <div class="row" style="margin-bottom:12px">
+      <label class="field">Site<select id="site-sel" style="display:block;width:320px;max-width:100%">${Object.keys(sites).map(c => `<option value="${c}" ${c === curSite ? 'selected' : ''}>${c} — ${esc(sites[c].name)} (${esc(sites[c].region)})</option>`).join('')}</select></label>
+      <span class="small">Edit the selected site — each site is independent. Every save is recorded: old → new · who · when.</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
+      ${SITE_FIELDS.map(f => pf(curSite, sites[curSite] || {}, f)).join('')}
+    </div>
+    <div style="border-top:1px solid var(--line);margin:14px 0"></div>
+    <div class="small" style="text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Network thresholds (apply to every site)</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
+      ${NET_FIELDS.map(f => pfnet(net, f)).join('')}
+    </div>
+    <div class="row" style="margin-top:12px;justify-content:flex-end">
+      <button class="danger" id="reset-site">↺ RESET SITE TO DEFAULT</button>
+      <button class="primary" id="save-params">💾 SAVE CHANGES</button>
+    </div>
+    <div class="small" style="margin-top:8px">${last
+      ? `<b>Last changed:</b> ${esc(last.scope)} ${esc(last.field)} ${esc(fmtV(last.old))} → ${esc(fmtV(last.new))} — ${esc(last.by)}, ${esc(new Date(last.ts).toLocaleString())}`
+      : 'No parameter changes yet.'}</div>
+    <div class="small" style="margin-top:4px">Price “inherit” = network default · Driver mapping: <code>DRIVER-SITE MAM</code> in Log.</div>
+  </div>
+
+  <h2>Parameter change log</h2>
+  <div class="card">${PL.length ? `<table>
+    <tr><th>When</th><th>Scope</th><th>Field</th><th>Old → New</th><th>By</th></tr>
+    ${PL.map(e => `<tr><td>${esc(new Date(e.ts).toLocaleString())}</td><td><b>${esc(e.scope)}</b></td><td>${esc(e.field)}</td><td>${esc(fmtV(e.old))} → ${esc(fmtV(e.new))}</td><td>${esc(e.by)}</td></tr>`).join('')}
+  </table>` : '<div class="muted">No parameter changes yet — every edit is recorded here the moment it is saved.</div>'}
+  <div class="small" style="margin-top:8px">Last 10 of ${(S.paramLog || PL).length} shown. Changes apply to <b>future</b> calculations only — historical data keeps its original values.</div></div>
+
+  <h2>Driver → site (cash reconciliation accuracy)</h2>
+  <div class="card"><table>
+    <tr><th>Driver</th><th>Loads / sells for</th></tr>
+    ${driverRows}
+  </table>
+  <div class="row" style="margin-top:10px"><button class="primary" id="save-drivers">Save mapping</button></div>
+  <div class="small" style="margin-top:8px">Mapped drivers reconcile REMITTED at their site's price (exact). Unmapped drivers use the network-weighted price.</div></div>
+
+  <h2>WhatsApp integration (Meta Cloud API)</h2>
+  <div class="card">
+    <div class="grid3">
+      <label class="field">Phone Number ID<input type="text" id="wa-pn" value="${esc(wa.phone_number_id)}"></label>
+      <label class="field">Permanent access token<input type="password" id="wa-token" value="${esc(wa.token)}" placeholder="EAAG…"></label>
+      <label class="field">Verify token<input type="text" id="wa-vt" value="${esc(wa.verify_token)}"></label>
+    </div>
+    <div class="grid3" style="margin-top:10px">
+      <label class="field">Manager MAM phone (9 PM nudges)<input type="text" id="wa-m-mam" value="${esc(mgr.MAM || '')}" placeholder="+233…"></label>
+      <label class="field">Manager NKZ phone (9 PM nudges)<input type="text" id="wa-m-nkz" value="${esc(mgr.NKZ || '')}" placeholder="+233…"></label>
+      <label class="field">Manager TCH phone (9 PM nudges)<input type="text" id="wa-m-tch" value="${esc(mgr.TCH || '')}" placeholder="+233…"></label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label class="field">CEO phone (10 PM briefing + Sunday weekly)<input type="text" id="wa-ceo" value="${esc(wa.ceo || '')}" placeholder="+233…"></label>
+      <button class="primary" id="save-wa">Save WhatsApp config</button>
+      <span class="small">Webhook URL to register in Meta: <code>${origin}/webhook</code></span>
+    </div>
+    <div class="small" style="margin-top:10px">Setup: Meta developer portal → create app → WhatsApp product → configure this webhook → permanent token (System User) → paste above. Inbound texts hit the engine and get a reply; 9 PM nudges, 10 PM briefing and Sunday Weekly Review push automatically (Ghana = UTC).</div>
+  </div>
+
+  <h2>Demo data — DANGER ZONE</h2>
+  <div class="row">
+    <button class="primary" id="seed">Seed a demo week</button>
+    <button class="danger" id="reset">Reset all history (keep parameters)</button>
+    <span class="small">Seeding generates 7 days of plausible data. Reset wipes production, trips, debt, stock and log — the evidence trail. There is no undo.</span>
+  </div>
+  </div>
+
+  <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50;align-items:center;justify-content:center">
+    <div style="background:#18212b;border:1px solid var(--line);border-radius:12px;padding:18px 20px;max-width:480px;width:92%;max-height:82vh;overflow:auto">
+      <h3 style="margin:0 0 6px">⚠️ Confirm parameter change</h3>
+      <p><b>This affects all future calculations. Continue?</b></p>
+      <ul id="modal-diff" style="margin:10px 0;padding-left:18px;font-size:13px"></ul>
+      <div class="small">Recorded in the audit log (old → new, who, when) and applied to future runs only — historical data keeps its original values.</div>
+      <div class="row" style="justify-content:flex-end;margin-top:12px">
+        <button id="m-cancel">Cancel</button>
+        <button class="danger" id="m-yes">Continue</button>
+      </div>
+    </div>
+  </div>`;
+
+  $('#site-sel').onchange = e => { curSite = e.target.value; render(); };
+
+  $('#save-params').onclick = async () => {
+    const sitePatch = {};
+    SITE_FIELDS.forEach(f => {
+      const v = document.getElementById(`pf-${curSite}-${f.k}`).value.trim();
+      if (f.k === 'name') { if (v) sitePatch.name = v; }
+      else sitePatch[f.k] = v === '' ? null : Number(v);
+    });
+    const netPatch = {};
+    NET_FIELDS.forEach(f => { netPatch[f.k] = document.getElementById(`pf-net-${f.k}`).value.trim() === '' ? null : Number(document.getElementById(`pf-net-${f.k}`).value); });
+    const body = { by: 'Admin GUI', sites: { [curSite]: sitePatch }, network: netPatch };
+    const r = await api('/api/config', { ...body, dryRun: true });
+    if (!r.changes || !r.changes.length) { flash('No changes to save.'); return; }
+    pendingBody = body;
+    showConfirm(r.changes.map(c => `${c.scope} ${c.field}: ${fmtV(c.old)} → ${fmtV(c.new)}`));
+  };
+  $('#reset-site').onclick = async () => {
+    const r = await api('/api/config', { by: 'Admin GUI', resetDefault: curSite, dryRun: true });
+    if (!r.changes || !r.changes.length) { flash(`${curSite} is already at factory defaults.`); return; }
+    pendingBody = { by: 'Admin GUI', resetDefault: curSite };
+    showConfirm(r.changes.map(c => `${c.scope} ${c.field}: ${fmtV(c.old)} → ${fmtV(c.new)} (default)`));
+  };
+  $('#save-drivers').onclick = async () => {
+    const drivers = {};
+    $$('select[data-driver]').forEach(sel => { drivers[sel.dataset.driver] = sel.value; });
+    await api('/api/config', { drivers });
+    await refresh(); flash('Driver mapping saved');
+  };
+  $('#save-wa').onclick = async () => {
+    await api('/api/config', { whatsapp: {
+      phone_number_id: $('#wa-pn').value, token: $('#wa-token').value, verify_token: $('#wa-vt').value,
+      ceo: $('#wa-ceo').value, managers: { MAM: $('#wa-m-mam').value, NKZ: $('#wa-m-nkz').value, TCH: $('#wa-m-tch').value },
+    } });
+    await refresh(); flash('WhatsApp config saved');
+  };
+  $('#seed').onclick = async () => { if (confirm('Seed 7 days of demo history? This replaces current history.')) { await api('/api/demo'); await refresh(); } };
+  $('#reset').onclick = async () => { if (confirm('Reset ALL production, trips, debt, stock and log history? Parameters are kept. This cannot be undone.')) { await api('/api/reset'); await refresh(); } };
+}
+
+function showConfirm(lines) {
+  $('#modal-diff').innerHTML = lines.map(l => `<li>${esc(l)}</li>`).join('');
+  $('#modal').style.display = 'flex';
+  $('#m-cancel').onclick = () => { $('#modal').style.display = 'none'; pendingBody = null; };
+  $('#m-yes').onclick = async () => {
+    $('#modal').style.display = 'none';
+    const body = pendingBody; pendingBody = null;
+    await api('/api/config', body);
+    await refresh(); flash('Saved — recorded in the change log');
+  };
+}
+
+refresh().catch(e => { $('#view').innerHTML = '<div class="muted" style="padding:18px 22px">⚠️ ' + esc(e.message) + '</div>'; });
+</script>
+</body>
+</html>

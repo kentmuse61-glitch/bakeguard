@@ -1,0 +1,18 @@
+# BakeGuard — Render Blueprint (one-click deploy from the Render dashboard)
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: bakeguard
+    runtime: node
+    plan: free
+    region: london            # closest Render region to Ghana
+    buildCommand: ""          # zero dependencies — nothing to install
+    startCommand: node server.js
+    autoDeploy: true
+    healthCheckPath: /api/state
+    envVars:
+      - key: BAKEGUARD_ADMIN_PASS
+        value: hope2026       # CHANGE ME — password for /admin (owner dashboard stays public)
+    # NOTE: data state auto-detects Render's persistent disk at /var/data when one is
+    # attached (paid plan: service → Disks → Add new disk, mountPath /var/data, 1 GB).
+    # On the free plan it uses ./data and re-seeds the demo on each cold start.
