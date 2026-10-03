@@ -1598,7 +1598,7 @@
     "whatsapp": {
       "phone_number_id": "",
       "token": "",
-      "verify_token": "bakeguard-verify",
+      "verify_token": "",
       "managers": {},
       "ceo": ""
     }

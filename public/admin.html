@@ -106,7 +106,7 @@ function render() {
   <div class="card">
     <div class="grid3">
       <label class="field">Phone Number ID<input type="text" id="wa-pn" value="${esc(wa.phone_number_id)}"></label>
-      <label class="field">Permanent access token<input type="password" id="wa-token" value="${esc(wa.token)}" placeholder="EAAG…"></label>
+      <label class="field">Permanent access token<input type="password" id="wa-token" value="" placeholder="${wa.token ? '•••• saved — type a new token to replace' : 'EAAG… (leave blank to keep saved)'}" autocomplete="new-password"></label>
       <label class="field">Verify token<input type="text" id="wa-vt" value="${esc(wa.verify_token)}"></label>
     </div>
     <div class="grid3" style="margin-top:10px">
@@ -120,6 +120,7 @@ function render() {
       <span class="small">Webhook URL to register in Meta: <code>${origin}/webhook</code></span>
     </div>
     <div class="small" style="margin-top:10px">Setup: Meta developer portal → create app → WhatsApp product → configure this webhook → permanent token (System User) → paste above. Inbound texts hit the engine and get a reply; 9 PM nudges, 10 PM briefing and Sunday Weekly Review push automatically (Ghana = UTC).</div>
+    <div class="small" style="margin-top:6px">🔒 Security: the token is stored <b>write-only</b> (never shown again — paste a new one to replace). Before connecting, set these <b>environment variables</b> in the Render dashboard (service → Environment): <code>WA_APP_SECRET</code> = your Meta <i>App Secret</i> (required — the webhook rejects all messages without it, and only <b>numbers configured above</b> are accepted), optionally <code>WA_VERIFY_TOKEN</code> instead of the field above.</div>
   </div>
 
   <h2>Demo data — DANGER ZONE</h2>
@@ -173,10 +174,13 @@ function render() {
     await refresh(); flash('Driver mapping saved');
   };
   $('#save-wa').onclick = async () => {
-    await api('/api/config', { whatsapp: {
-      phone_number_id: $('#wa-pn').value, token: $('#wa-token').value, verify_token: $('#wa-vt').value,
+    const waBody = {
+      phone_number_id: $('#wa-pn').value, verify_token: $('#wa-vt').value,
       ceo: $('#wa-ceo').value, managers: { MAM: $('#wa-m-mam').value, NKZ: $('#wa-m-nkz').value, TCH: $('#wa-m-tch').value },
-    } });
+    };
+    const newTok = $('#wa-token').value.trim();
+    if (newTok) waBody.token = newTok; // blank = keep the saved token (write-only field)
+    await api('/api/config', { whatsapp: waBody });
     await refresh(); flash('WhatsApp config saved');
   };
   $('#seed').onclick = async () => { if (confirm('Seed 7 days of demo history? This replaces current history.')) { await api('/api/demo'); await refresh(); } };

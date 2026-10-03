@@ -3,6 +3,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const { load, save, todayStr, defaultState } = require('./lib/store');
 const { ingest, computeSummary, runDataGapNudge } = require('./lib/rules');
@@ -13,6 +14,34 @@ const { radarAdvice } = require('./lib/market');
 const PORT = process.env.PORT || 3000;
 const PUB = path.join(__dirname, 'public');
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+
+// ---------- security: headers, same-origin, rate limit ----------
+const SEC_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+};
+function clientIP(req) {
+  return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '?').split(',')[0].trim();
+}
+// simple in-memory sliding-window limiter (per IP+path, 60 s window)
+const hits = new Map();
+function rateLimited(req, p, limit) {
+  const key = clientIP(req) + '|' + p;
+  const now = Date.now();
+  const w = (hits.get(key) || []).filter(t => now - t < 60000);
+  if (w.length >= limit) return true;
+  w.push(now);
+  hits.set(key, w);
+  if (hits.size > 5000) for (const k of hits.keys()) if (!(hits.get(k) || []).some(t => now - t < 60000)) hits.delete(k);
+  return false;
+}
+function sameOriginOK(req, url) {
+  const o = req.headers.origin;
+  if (!o) return true; // non-browser clients (curl, WhatsApp, cron) send no Origin
+  try { return new URL(o).host === url.host; } catch (e) { return false; }
+}
 
 // ---------- admin gate (public deployment safety) ----------
 // The owner dashboard and CEO view are public; /admin and its write endpoints
@@ -49,6 +78,15 @@ function readBody(req) {
     let data = '';
     req.on('data', c => { data += c; if (data.length > 1e6) { req.destroy(); reject(new Error('body too large')); } });
     req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
+    req.on('error', reject);
+  });
+}
+// raw body (for HMAC signature verification — the exact bytes matter)
+function readRaw(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', c => { data += c; if (data.length > 1e6) { req.destroy(); reject(new Error('body too large')); } });
+    req.on('end', () => resolve(data));
     req.on('error', reject);
   });
 }
@@ -154,21 +192,36 @@ setInterval(async () => {
 })();
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  // base must carry the real Host (with port) so url.host matches Origin checks
+  const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
   const p = url.pathname;
+  for (const [k, v] of Object.entries(SEC_HEADERS)) res.setHeader(k, v);
+  // ---------- static ----------
+  if (req.method === 'GET' && p === '/robots.txt') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    return res.end('User-agent: *\nDisallow: /\n');
+  }
   try {
-    // ---------- static ----------
     if (req.method === 'GET' && (p === '/' || p === '/index.html')) return serveStatic(req, res, '/index.html');
-    if (req.method === 'GET' && p === '/ceo') return serveStatic(req, res, '/ceo.html');
+    if (req.method === 'GET' && p === '/ceo') {
+      console.log(`[access] /ceo view from ${clientIP(req)}`);
+      return serveStatic(req, res, '/ceo.html');
+    }
     if (req.method === 'GET' && p === '/admin') {
-      if (!adminAuthed(req, url)) return sendLogin(res);
+      if (!adminAuthed(req, url)) { console.log(`[access] /admin denied (bad/no password) from ${clientIP(req)}`); return sendLogin(res); }
       if (url.searchParams.get('pass')) {
+        console.log(`[access] /admin LOGIN from ${clientIP(req)}`);
         res.writeHead(302, { Location: '/admin', 'Set-Cookie': `bg_admin=${encodeURIComponent(ADMIN_PASS)}; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax` });
         return res.end();
       }
       return serveStatic(req, res, '/admin.html');
     }
-    if (req.method === 'POST' && (p === '/api/config' || p === '/api/reset' || p === '/api/demo') && !adminAuthed(req, url)) {
+    // every write API: same-origin only (for browser callers), rate-limited, admin-gated
+    if (req.method === 'POST' && p.startsWith('/api/')) {
+      if (!sameOriginOK(req, url)) return sendJSON(res, 403, { error: 'cross-origin request rejected' });
+      if (rateLimited(req, p, 30)) return sendJSON(res, 429, { error: 'rate limited' });
+    }
+    if (req.method === 'POST' && (p === '/api/config' || p === '/api/reset' || p === '/api/demo' || p === '/api/ingest') && !adminAuthed(req, url)) {
       return sendJSON(res, 401, { error: 'admin password required (x-admin-pass header, pass= query, or login at /admin)' });
     }
     if (req.method === 'GET' && p !== '/api/state' && !p.startsWith('/api/') && p !== '/webhook') {
@@ -294,6 +347,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && p === '/api/reset') {
       const state = load();
+      // evidence preservation: automatic pre-reset backup before anything is wiped
+      try { if (fs.existsSync(STATE_FILE)) fs.copyFileSync(STATE_FILE, STATE_FILE.replace(/\.json$/, '') + '_backup_pre_reset_' + Date.now() + '.json'); } catch (e) { console.warn('pre-reset backup failed:', e.message); }
       state.production = []; state.trips = []; state.stockLog = [];
       state.kioskDebt = []; state.alerts = []; state.log = [];
       save(state);
@@ -306,8 +361,11 @@ const server = http.createServer(async (req, res) => {
       const mode = url.searchParams.get('hub.mode');
       const token = url.searchParams.get('hub.verify_token');
       const challenge = url.searchParams.get('hub.challenge');
-      const expect = state.config.whatsapp.verify_token || process.env.WA_VERIFY_TOKEN || 'bakeguard-verify';
-      if (mode === 'subscribe' && token === expect) {
+      // fail-closed: a verify token MUST be configured (admin panel or WA_VERIFY_TOKEN env)
+      const expect = state.config.whatsapp.verify_token || process.env.WA_VERIFY_TOKEN || '';
+      if (!expect) { res.writeHead(403, { 'Content-Type': 'text/plain' }); return res.end('forbidden: verify token not configured'); }
+      const safeEq = (a, b) => crypto.timingSafeEqual(crypto.createHash('sha256').update(String(a)).digest(), crypto.createHash('sha256').update(String(b)).digest());
+      if (mode === 'subscribe' && token && safeEq(token, expect)) {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         return res.end(challenge || '');
       }
@@ -315,14 +373,33 @@ const server = http.createServer(async (req, res) => {
       return res.end('forbidden');
     }
     if (p === '/webhook' && req.method === 'POST') {
-      const payload = await readBody(req);
+      if (rateLimited(req, p, 20)) return sendJSON(res, 429, { error: 'rate limited' });
       const state = load();
+      const wa = state.config.whatsapp || {};
+      // 1) Meta signature verification (X-Hub-Signature-256 = HMAC-SHA256 of raw body, keyed by app secret)
+      const appSecret = process.env.WA_APP_SECRET || wa.app_secret || '';
+      const raw = await readRaw(req);
+      if (!appSecret) return sendJSON(res, 403, { error: 'webhook disabled: set WA_APP_SECRET (Meta app secret) before connecting' });
+      const sig = String(req.headers['x-hub-signature-256'] || '');
+      const expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(raw, 'utf8').digest('hex');
+      const sigOK = sig && sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+      if (!sigOK) { console.log(`[security] webhook rejected: bad signature from ${clientIP(req)}`); return sendJSON(res, 403, { error: 'invalid webhook signature' }); }
+      let payload;
+      try { payload = JSON.parse(raw || '{}'); } catch (e) { return sendJSON(res, 400, { error: 'bad json' }); }
+      // 2) sender allow-list: only configured numbers (managers + CEO) are processed
+      const allowed = new Set([wa.ceo, wa.managers && wa.managers.MAM, wa.managers && wa.managers.NKZ, wa.managers && wa.managers.TCH].map(x => String(x || '').replace(/[^0-9]/g, '')).filter(x => x.length >= 9));
       const replies = [];
       for (const entry of payload.entry || []) {
         for (const change of (entry.changes || [])) {
           const value = change.value || {};
           for (const msg of value.messages || []) {
             if (msg.type !== 'text' || !msg.text || !msg.text.body) continue;
+            const from = String(msg.from || '').replace(/[^0-9]/g, '');
+            if (!allowed.has(from)) {
+              state.log.push({ ts: new Date().toISOString(), kind: 'webhook-reject', from: msg.from || '?', text: String(msg.text.body).slice(0, 120) });
+              replies.push({ to: msg.from, text: '⛔ Unrecognised number. This line is reserved for HOPE Special Bread managers.' });
+              continue;
+            }
             const result = ingest(state, { from: 'WhatsApp ' + (msg.from || '?'), text: msg.text.body });
             replies.push({ to: msg.from, text: result.reply });
           }
