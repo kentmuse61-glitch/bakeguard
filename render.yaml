@@ -9,7 +9,7 @@ services:
     buildCommand: ""          # zero dependencies — nothing to install
     startCommand: node server.js
     autoDeploy: true
-    healthCheckPath: /api/state
+    healthCheckPath: /ping
     envVars:
       - key: BAKEGUARD_ADMIN_PASS
         value: hope2026       # CHANGE ME — password for /admin (owner dashboard stays public)

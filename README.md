@@ -160,9 +160,11 @@ data/state.json      Runtime data (created on first write)
 | `WA_VERIFY_TOKEN` env (or /admin field) | Used for the Meta GET handshake. **No built-in default** — if unset, the handshake is refused, so the webhook URL can't be "verified" by a stranger. |
 | Rate limit | 20 requests/min per IP on `/webhook`. |
 
-**Admin & write APIs:**
+**Login wall (whole site):**
 
-- `/api/config`, `/api/reset`, `/api/demo`, `/api/ingest` and `/admin` require the admin password (`BAKEGUARD_ADMIN_PASS` env — set it in Render; a default ships in code and should be changed).
+- The **dashboard (`/`), CEO view (`/ceo`) and `/admin` all sit behind one password** — plus **every read API** (`/api/state`, `/api/report`, …) and the app assets, so the data can't be pulled straight from the URL either.
+- Login sets an `HttpOnly` cookie (30 days); **`/logout`** clears it. Login attempts are rate-limited (8/min/IP); every access/denial/login is logged with client IP.
+- Set the password with the `BAKEGUARD_ADMIN_PASS` env var (Render). A default ships in code and **should be changed**. `/ping` (health check) and the Meta webhook remain open.
 - Every `POST /api/*` from a browser must be **same-origin** (cross-origin requests get `403`), and is rate-limited to 30/min per IP. Non-browser clients (curl/cron — no `Origin` header) are allowed but still admin-gated + rate-limited.
 - `/api/reset` writes an automatic **pre-reset backup** (`state_backup_pre_reset_<ts>.json`) before wiping history.
 

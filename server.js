@@ -54,16 +54,17 @@ function adminAuthed(req, url) {
   const c = m ? decodeURIComponent(m[1]) : null;
   return q === ADMIN_PASS || h === ADMIN_PASS || c === ADMIN_PASS;
 }
-function sendLogin(res) {
-  const page = `<!doctype html><html><head><meta charset="utf-8"><title>Admin — BakeGuard</title>
+function sendLogin(res, title = 'Admin', target = '/admin') {
+  const sub = title === 'Admin' ? 'Engineer area. Enter the admin password to continue.' : 'Protected area. Enter the password to continue.';
+  const page = `<!doctype html><html><head><meta charset="utf-8"><title>${title} — BakeGuard</title>
 <style>body{background:#0b1118;color:#e8edf4;font:15px system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 form{background:#141d28;border:1px solid #2a3a4c;border-radius:12px;padding:26px 28px;width:300px}
 h2{margin:0 0 6px;font-size:18px}p{color:#8fa1b3;font-size:12px;margin:0 0 16px}
 input{width:100%;box-sizing:border-box;background:#0b1118;border:1px solid #2a3a4c;border-radius:8px;color:#e8edf4;padding:10px 12px;font-size:15px}
 button{width:100%;margin-top:12px;background:#1d6fb8;border:none;border-radius:8px;color:#fff;padding:10px;font-size:15px;cursor:pointer}</style></head>
-<body><form onsubmit="location='/admin?pass='+encodeURIComponent(this.p.value);return false">
-<h2>🛡️ BakeGuard — Admin</h2><p>Engineer area. Enter the admin password to continue.</p>
-<input name="p" type="password" placeholder="Admin password" autofocus>
+<body><form onsubmit="location='${target}?pass='+encodeURIComponent(this.p.value);return false">
+<h2>🛡️ BakeGuard — ${title}</h2><p>${sub}</p>
+<input name="p" type="password" placeholder="Password" autofocus>
 <button type="submit">Unlock</button></form></body></html>`;
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(page);
@@ -202,19 +203,34 @@ const server = http.createServer(async (req, res) => {
     return res.end('User-agent: *\nDisallow: /\n');
   }
   try {
-    if (req.method === 'GET' && (p === '/' || p === '/index.html')) return serveStatic(req, res, '/index.html');
-    if (req.method === 'GET' && p === '/ceo') {
-      console.log(`[access] /ceo view from ${clientIP(req)}`);
-      return serveStatic(req, res, '/ceo.html');
-    }
-    if (req.method === 'GET' && p === '/admin') {
-      if (!adminAuthed(req, url)) { console.log(`[access] /admin denied (bad/no password) from ${clientIP(req)}`); return sendLogin(res); }
+    // ---------- open: health check ----------
+    if (req.method === 'GET' && p === '/ping') return sendJSON(res, 200, { ok: true });
+
+    // ---------- login-walled pages: dashboard, CEO view, admin ----------
+    // One password (BAKEGUARD_ADMIN_PASS) protects everything. The login sets an
+    // HttpOnly cookie (30 days); /logout clears it. Login attempts are rate-limited.
+    const loginWall = (title, target, file) => {
+      if (url.searchParams.get('pass') && rateLimited(req, target + ':login', 8)) {
+        return sendJSON(res, 429, { error: 'too many login attempts — try again in a minute' });
+      }
+      if (!adminAuthed(req, url)) {
+        console.log(`[access] ${target} denied (bad/no password) from ${clientIP(req)}`);
+        return sendLogin(res, title, target);
+      }
       if (url.searchParams.get('pass')) {
-        console.log(`[access] /admin LOGIN from ${clientIP(req)}`);
-        res.writeHead(302, { Location: '/admin', 'Set-Cookie': `bg_admin=${encodeURIComponent(ADMIN_PASS)}; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax` });
+        console.log(`[access] ${target} LOGIN from ${clientIP(req)}`);
+        res.writeHead(302, { Location: target, 'Set-Cookie': `bg_admin=${encodeURIComponent(ADMIN_PASS)}; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax` });
         return res.end();
       }
-      return serveStatic(req, res, '/admin.html');
+      console.log(`[access] ${target} viewed from ${clientIP(req)}`);
+      return serveStatic(req, res, file);
+    };
+    if (req.method === 'GET' && (p === '/' || p === '/index.html')) return loginWall('Dashboard', '/', '/index.html');
+    if (req.method === 'GET' && p === '/ceo') return loginWall('CEO View', '/ceo', '/ceo.html');
+    if (req.method === 'GET' && p === '/admin') return loginWall('Admin', '/admin', '/admin.html');
+    if (req.method === 'GET' && p === '/logout') {
+      res.writeHead(302, { Location: '/', 'Set-Cookie': 'bg_admin=; Path=/; Max-Age=0; SameSite=Lax' });
+      return res.end();
     }
     // every write API: same-origin only (for browser callers), rate-limited, admin-gated
     if (req.method === 'POST' && p.startsWith('/api/')) {
@@ -224,8 +240,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && (p === '/api/config' || p === '/api/reset' || p === '/api/demo' || p === '/api/ingest') && !adminAuthed(req, url)) {
       return sendJSON(res, 401, { error: 'admin password required (x-admin-pass header, pass= query, or login at /admin)' });
     }
-    if (req.method === 'GET' && p !== '/api/state' && !p.startsWith('/api/') && p !== '/webhook') {
-      if (p.startsWith('/style') || p.startsWith('/app') || p.startsWith('/logo')) return serveStatic(req, res, p);
+    // read APIs are business data — login required (cookie from the dashboard login)
+    if (req.method === 'GET' && p.startsWith('/api/') && !adminAuthed(req, url)) {
+      return sendJSON(res, 401, { error: 'login required — open the site and enter the password' });
+    }
+    // app assets (CSS/JS/logo) — login required; the login page itself is self-contained
+    if (req.method === 'GET' && (p.startsWith('/style') || p.startsWith('/app') || p.startsWith('/logo'))) {
+      if (!adminAuthed(req, url)) return sendJSON(res, 404, { error: 'not found' });
+      return serveStatic(req, res, p);
     }
 
     // ---------- engine API ----------
