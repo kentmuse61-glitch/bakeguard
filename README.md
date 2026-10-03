@@ -54,7 +54,7 @@ That's it. From then on:
 
 ---
 
-## 💬 WhatsApp commands (strict parsing — ambiguous money/counts get a clarifying question, never a guess)
+## 💬 WhatsApp commands (plain English or short commands — ambiguous money/counts get a clarifying question, never a guess)
 
 | Command | Example | Effect |
 |---|---|---|
@@ -149,8 +149,34 @@ data/state.json      Runtime data (created on first write)
 
 ---
 
-## 🔒 Security model
+## 🗣️ Natural language + honesty rules
 
+**The robot speaks plain WhatsApp English** (voice-to-text friendly, number words included). Short commands still work exactly as before.
+
+| You can type | Recorded as |
+|---|---|
+| `stock is 30 bags at Mampong` / `we have 30 bags left at Nkoranza` | STOCK |
+| `we baked 80 bags at Mampong, 4000 and 3800` | PROD (yield checked per session) |
+| `Mampong 80 bags, S1 4000 S2 3800` | PROD |
+| `KAN loaded 1000, cash 800, credit 200` | TRIP (gap checked) |
+| `selling at one point fifty` / `price is 1.6` | PRICE |
+| `KAN remitted 3,300 cedis` | REMITTED (reconciled vs expected cash) |
+| `Adu kiosk owes 300` / `Adu paid 500` | KIOSK debt ledger |
+| `Adu kiosk refused credit` | Credit refusal |
+| `yield is 95 per bag at Mampong` / `session is 40` | Parameter (audited) |
+| `the scale was faulty at S2 Mampong` | REASON attached to the alert |
+
+Ambiguous numbers are **never guessed** — the robot asks which figure is which.
+
+**No input ⇒ no processed output.** The engine reports only figures it actually received:
+- A day with zero reports produces a short honest briefing (`⏸️ No reports received today — nothing processed`), not computed KPIs.
+- With an empty ledger the **readiness score shows “—”**, not a healthy-looking default number.
+- The 9 PM nudge still runs (it exists to *collect* input); the 10 PM briefing only turns into full numbers when reports arrive.
+- New deployments start with an **empty ledger** — the demo week is loaded only by the explicit **Load demo** button in `/admin` (for pitches).
+
+---
+
+## 🔒 Security model
 **WhatsApp webhook (fail-closed — refuses work until configured):**
 
 | Control | Behaviour |

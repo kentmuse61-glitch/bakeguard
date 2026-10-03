@@ -22,6 +22,11 @@ const SENDER_ROLES = [
   ['Kiosk owner', 'Kiosk'],
 ];
 const SAMPLES = [
+  'we baked 80 bags at Mampong, 4000 and 3800',
+  'stock is 30 bags at Nkoranza',
+  'KAN loaded 1000, cash 800, credit 200',
+  'Adu kiosk owes 300',
+  'price is 1.50',
   'PROD MAM 80 S1-4000 S2-3800',
   'TRIP KSI 1000 CASH-800 CR-200 T1',
   'REMITTED KSI 3300',
@@ -85,7 +90,7 @@ function rBanners() {
     }
   }
   // readiness below scale-ready
-  if (s.readiness.score < 60) {
+  if (s.readiness.score != null && s.readiness.score < 60) {
     const weakest = Object.entries(s.readiness.detail).sort((a, b) => (a[1].pts / a[1].max) - (b[1].pts / b[1].max))[0];
     const names = Object.keys(S.params.sites).map(c => c).join(' / ');
     out.push(`<div class="banner amber">⚠️ READINESS ${s.readiness.score}/100 — below scale-ready. Weakest: ${weakest[0]} (${s.readiness.detail[weakest[0]].value}${weakest[0] === 'debt' ? ' days' : weakest[0] === 'cover' ? 'd cover' : '%'}).
@@ -107,7 +112,7 @@ function rDash() {
       <div class="sub">${s.debtOverdue ? `<span class="bdg w">⚠️ ${s.debtOverdue} overdue &gt; 3d</span>` : '<span class="bdg ok">none overdue</span>'}</div></div>
     <div class="card"><div class="lbl">Min flour cover</div><div class="val">${s.minCover != null ? s.minCover.toFixed(1) + 'd' : '—'}</div>
       <div class="sub">${(() => { const cs = (S.params && S.params.sites) ? Object.values(S.params.sites).map(x => x.coverTarget ?? 3) : [3]; const t = cs.length ? cs.reduce((a, b) => a + b, 0) / cs.length : 3; return s.minCover != null && s.minCover < t ? `<span class="bdg c">🚨 below ${t} days</span>` : '<span class="bdg ok">safe</span>'; })()} network-wide</div></div>
-    <div class="card"><div class="lbl">Scale-up readiness</div><div class="val">${r.score}/100</div>
+    <div class="card"><div class="lbl">Scale-up readiness</div><div class="val">${r.score == null ? '—' : r.score + '/100'}</div>
       <div class="scorebar"><i style="width:${r.score}%"></i></div>
       <div class="sub" style="margin-top:6px">${r.score >= 80 ? 'scale-ready' : r.score >= 60 ? 'watch' : 'fix first'}</div></div>
   </div>`;
