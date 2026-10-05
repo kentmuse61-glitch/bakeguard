@@ -16,12 +16,17 @@ const PUB = path.join(__dirname, 'public');
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
 // ---------- security: headers, same-origin, rate limit ----------
+// CSP is set per-response (HTML pages carry a script nonce; see cspHeader).
 const SEC_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
-  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+  'Strict-Transport-Security': 'max-age=31536000',
 };
+function cspHeader(nonce) {
+  const script = nonce ? `script-src 'self' 'nonce-${nonce}'` : "script-src 'self'";
+  return `default-src 'self'; ${script}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'`;
+}
 function clientIP(req) {
   return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '?').split(',')[0].trim();
 }
@@ -44,29 +49,57 @@ function sameOriginOK(req, url) {
 }
 
 // ---------- admin gate (public deployment safety) ----------
-// The owner dashboard and CEO view are public; /admin and its write endpoints
-// require a password. Set BAKEGUARD_ADMIN_PASS in the Render dashboard to change it.
+// Dashboard, CEO view, /admin and all write endpoints sit behind one password.
+// Set BAKEGUARD_ADMIN_PASS in the environment. Sessions are random tokens
+// (never the password itself), stored in memory with a 30-day expiry.
 const ADMIN_PASS = process.env.BAKEGUARD_ADMIN_PASS || 'hope2026';
+if (!process.env.BAKEGUARD_ADMIN_PASS) {
+  console.warn('[security] WARNING: BAKEGUARD_ADMIN_PASS is not set — using the built-in default password. Set it in the environment.');
+}
+const sessions = new Map(); // token -> expiry (ms)
+const SESSION_MS = 30 * 86400 * 1000;
+function issueSession() {
+  const now = Date.now();
+  for (const [k, v] of sessions) if (v <= now) sessions.delete(k);
+  if (sessions.size > 500) sessions.clear();
+  const tok = crypto.randomBytes(24).toString('hex');
+  sessions.set(tok, now + SESSION_MS);
+  return tok;
+}
+function cookieToken(req) {
+  const m = String(req.headers.cookie || '').match(/(?:^|;\s*)bg_admin=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+function constantTimeEq(a, b) {
+  if (!a || !b) return false;
+  const ha = crypto.createHash('sha256').update(String(a)).digest();
+  const hb = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
 function adminAuthed(req, url) {
   const q = url.searchParams.get('pass');
   const h = req.headers['x-admin-pass'];
-  const m = String(req.headers.cookie || '').match(/bg_admin=([^;]+)/);
-  const c = m ? decodeURIComponent(m[1]) : null;
-  return q === ADMIN_PASS || h === ADMIN_PASS || c === ADMIN_PASS;
+  const tok = cookieToken(req);
+  if (tok && sessions.get(tok) > Date.now()) return true;
+  if (q && constantTimeEq(q, ADMIN_PASS)) return true;
+  if (h && constantTimeEq(h, ADMIN_PASS)) return true;
+  return false;
 }
 function sendLogin(res, title = 'Admin', target = '/admin') {
   const sub = title === 'Admin' ? 'Engineer area. Enter the admin password to continue.' : 'Protected area. Enter the password to continue.';
+  const nonce = crypto.randomBytes(16).toString('base64');
   const page = `<!doctype html><html><head><meta charset="utf-8"><title>${title} — BakeGuard</title>
 <style>body{background:#0b1118;color:#e8edf4;font:15px system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 form{background:#141d28;border:1px solid #2a3a4c;border-radius:12px;padding:26px 28px;width:300px}
 h2{margin:0 0 6px;font-size:18px}p{color:#8fa1b3;font-size:12px;margin:0 0 16px}
 input{width:100%;box-sizing:border-box;background:#0b1118;border:1px solid #2a3a4c;border-radius:8px;color:#e8edf4;padding:10px 12px;font-size:15px}
 button{width:100%;margin-top:12px;background:#1d6fb8;border:none;border-radius:8px;color:#fff;padding:10px;font-size:15px;cursor:pointer}</style></head>
-<body><form onsubmit="location='${target}?pass='+encodeURIComponent(this.p.value);return false">
+<body><form id="login-form">
 <h2>🛡️ BakeGuard — ${title}</h2><p>${sub}</p>
 <input name="p" type="password" placeholder="Password" autofocus>
-<button type="submit">Unlock</button></form></body></html>`;
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+<button type="submit">Unlock</button></form>
+<script nonce="${nonce}">document.getElementById('login-form').addEventListener('submit', function (e) { e.preventDefault(); location = '${target}' + '?pass=' + encodeURIComponent(this.p.value); });<\/script></body></html>`;
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': cspHeader(nonce) });
   res.end(page);
 }
 
@@ -91,12 +124,17 @@ function readRaw(req) {
     req.on('error', reject);
   });
 }
-function serveStatic(req, res, p) {
+function serveStatic(req, res, p, nonce) {
   let file = path.join(PUB, p.replace(/^\/+/, ''));
-  if (!file.startsWith(PUB)) { res.writeHead(403); return res.end('forbidden'); }
+  if (file !== PUB && !file.startsWith(PUB + path.sep)) { res.writeHead(403); return res.end('forbidden'); }
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); return res.end('not found'); }
-  res.writeHead(200, { 'Content-Type': (MIME[path.extname(file)] || 'application/octet-stream') + '; charset=utf-8' });
-  res.end(fs.readFileSync(file));
+  let body = fs.readFileSync(file);
+  if (nonce && file.endsWith('.html')) {
+    // per-response script nonce so inline scripts stay allowed without 'unsafe-inline'
+    body = body.toString('utf8').replace(/<script(?![^>]*\bnonce=)/g, `<script nonce="${nonce}"`);
+  }
+  res.writeHead(200, { 'Content-Type': (MIME[path.extname(file)] || 'application/octet-stream') + '; charset=utf-8', 'Content-Security-Policy': cspHeader(nonce) });
+  res.end(body);
 }
 
 function waCreds(state) {
@@ -197,6 +235,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
   const p = url.pathname;
   for (const [k, v] of Object.entries(SEC_HEADERS)) res.setHeader(k, v);
+  res.setHeader('Content-Security-Policy', cspHeader(null)); // HTML pages override with a nonce
+  if (rateLimited(req, '*global', 240)) return sendJSON(res, 429, { error: 'rate limited' });
   // ---------- static ----------
   if (req.method === 'GET' && p === '/robots.txt') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -219,17 +259,19 @@ const server = http.createServer(async (req, res) => {
       }
       if (url.searchParams.get('pass')) {
         console.log(`[access] ${target} LOGIN from ${clientIP(req)}`);
-        res.writeHead(302, { Location: target, 'Set-Cookie': `bg_admin=${encodeURIComponent(ADMIN_PASS)}; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax` });
+        res.writeHead(302, { Location: target, 'Set-Cookie': `bg_admin=${issueSession()}; Path=/; HttpOnly; Secure; Max-Age=2592000; SameSite=Lax` });
         return res.end();
       }
       console.log(`[access] ${target} viewed from ${clientIP(req)}`);
-      return serveStatic(req, res, file);
+      return serveStatic(req, res, file, crypto.randomBytes(16).toString('base64'));
     };
     if (req.method === 'GET' && (p === '/' || p === '/index.html')) return loginWall('Dashboard', '/', '/index.html');
     if (req.method === 'GET' && p === '/ceo') return loginWall('CEO View', '/ceo', '/ceo.html');
     if (req.method === 'GET' && p === '/admin') return loginWall('Admin', '/admin', '/admin.html');
     if (req.method === 'GET' && p === '/logout') {
-      res.writeHead(302, { Location: '/', 'Set-Cookie': 'bg_admin=; Path=/; Max-Age=0; SameSite=Lax' });
+      const tok = cookieToken(req);
+      if (tok) sessions.delete(tok);
+      res.writeHead(302, { Location: '/', 'Set-Cookie': 'bg_admin=; Path=/; HttpOnly; Secure; Max-Age=0; SameSite=Lax' });
       return res.end();
     }
     // every write API: same-origin only (for browser callers), rate-limited, admin-gated
@@ -253,8 +295,11 @@ const server = http.createServer(async (req, res) => {
     // ---------- engine API ----------
     if (req.method === 'GET' && p === '/api/state') {
       const state = load();
+      // never echo the WhatsApp token to any client (the admin GUI never reads it)
+      const config = JSON.parse(JSON.stringify(state.config));
+      if (config.whatsapp && config.whatsapp.token) config.whatsapp.token = '•••set•••';
       return sendJSON(res, 200, {
-        params: state.params, config: state.config,
+        params: state.params, config,
         production: state.production.slice(-120),
         trips: state.trips.slice(-120),
         creditRefusals: state.creditRefusals.slice(-50),
@@ -297,6 +342,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const state = load();
       const changes = [];
+      const DUNDER = new Set(['__proto__', 'constructor', 'prototype']); // prototype-pollution guard
       const logChange = (scope, field, oldV, newV) => {
         if (oldV !== newV) changes.push({ ts: new Date().toISOString(), by: body.by || 'Admin GUI', scope, field, old: oldV, new: newV });
       };
@@ -313,6 +359,7 @@ const server = http.createServer(async (req, res) => {
       if (body.drivers) {
         state.params.drivers = state.params.drivers || {};
         for (const [drv, site] of Object.entries(body.drivers)) {
+          if (DUNDER.has(drv)) continue;
           if (site && state.params.sites[site]) state.params.drivers[drv] = site;
           else delete state.params.drivers[drv];
         }
@@ -320,6 +367,7 @@ const server = http.createServer(async (req, res) => {
       if (body.sites) {
         const numKeys = ['yield', 'batch', 'session', 'price', 'reorder', 'coverTarget', 'varMinor', 'varCrit', 'driverGap'];
         for (const [code, patch] of Object.entries(body.sites)) {
+          if (DUNDER.has(code)) continue;
           if (state.params.sites[code]) {
             for (const k of numKeys) {
               if (patch[k] !== undefined && patch[k] !== '') { const oldV = state.params.sites[code][k]; state.params.sites[code][k] = patch[k] === null ? null : Number(patch[k]); logChange(code, k, oldV, state.params.sites[code][k]); }
@@ -354,7 +402,9 @@ const server = http.createServer(async (req, res) => {
         }
       }
       save(state);
-      return sendJSON(res, 200, { ok: true, params: state.params, config: state.config, changes, lastChange: changes.length ? changes[changes.length - 1] : null });
+      const cfgOut = JSON.parse(JSON.stringify(state.config));
+      if (cfgOut.whatsapp && cfgOut.whatsapp.token) cfgOut.whatsapp.token = '•••set•••';
+      return sendJSON(res, 200, { ok: true, params: state.params, config: cfgOut, changes, lastChange: changes.length ? changes[changes.length - 1] : null });
     }
     if (req.method === 'GET' && p === '/api/param-log') {
       const state = load();
@@ -433,9 +483,12 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true, queued: replies.length, delivery });
     }
 
+    if (req.method !== 'GET' && req.method !== 'POST') return sendJSON(res, 405, { error: 'method not allowed' });
     return sendJSON(res, 404, { error: 'not found' });
   } catch (e) {
-    return sendJSON(res, 500, { error: String((e && e.stack) || e) });
+    // never leak stack traces / internal paths to the client
+    console.error('[500]', e && e.stack || e);
+    return sendJSON(res, 500, { error: 'internal error' });
   }
 });
 

@@ -209,7 +209,7 @@ function rDrivers() {
   </table></div>
   <div class="small" style="margin-top:8px">Cash Reconciliation Rule: gap &gt; 0.5% between driver-reported cash and Manager-remitted amount → 🚨 CASH HANDLING ALERT to the CEO. Closes the driver→Manager loop.</div>
   <div class="row" style="margin-top:10px"><label class="field">Record a remittance
-    <span class="row"><select id="rem-driver">${Object.values(s.drivers).map(d => `<option>${d.driver}</option>`).join('')}</select>
+    <span class="row"><select id="rem-driver">${Object.values(s.drivers).map(d => `<option>${esc(d.driver)}</option>`).join('')}</select>
     <input type="number" id="rem-amount" placeholder="GHS amount" style="min-width:130px"><button class="primary" id="rem-go">REMITTED ➤</button></span></label></div>`;
   return hero + daily + tripTable + remTable;
 }
@@ -268,7 +268,7 @@ function rStock() {
     const usage = S.summary.date; // avg usage shown via cover
     return `<tr><td>${esc(cfg.name)}</td><td class="num">${site.stock == null ? '?' : site.stock}</td><td class="num">${site.cover != null ? site.cover.toFixed(1) + ' days' : '—'}</td>
       <td>${site.stock != null && site.stock < 20 ? '🚨 &lt; 20 bags' : site.cover != null && site.cover < 3 ? '🚨 &lt; 3 days cover' : '<span class="bdg ok">safe</span>'}</td>
-      <td>${site.low ? (s.alerts.find(a => a.type === 'stock' && a.site === code && a.date === s.date) || { body: 'Reorder draft in Stock tab.' }).body.replace(/\n/g, '<br>') : '<span class="muted">no action</span>'}</td></tr>`;
+      <td>${site.low ? esc((s.alerts.find(a => a.type === 'stock' && a.site === code && a.date === s.date) || { body: 'Reorder draft in Stock tab.' }).body).replace(/\n/g, '<br>') : '<span class="muted">no action</span>'}</td></tr>`;
   }).join('');
   return `
   <h2>Flour stock & procurement</h2>

@@ -194,11 +194,20 @@ Ambiguous numbers are **never guessed** — the robot asks which figure is which
 - Every `POST /api/*` from a browser must be **same-origin** (cross-origin requests get `403`), and is rate-limited to 30/min per IP. Non-browser clients (curl/cron — no `Origin` header) are allowed but still admin-gated + rate-limited.
 - `/api/reset` writes an automatic **pre-reset backup** (`state_backup_pre_reset_<ts>.json`) before wiping history.
 
-**Platform hardening:**
+**Platform hardening (audited & tested):**
 
-- Security headers on every response: `Content-Security-Policy: default-src 'self'` (inline scripts only), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`.
-- `/robots.txt` disallows the whole site (ops data is not for search engines).
-- `state.json` is written `0600`; the WhatsApp token field in /admin is **write-only** (never echoed back to the page).
-- `/ceo` and `/admin` accesses are logged with client IP.
+- **Sessions, not password cookies:** login sets a random 48-hex-char session token (in-memory, 30-day expiry) — the cookie never contains the password; logout kills the session server-side. Cookie flags: `HttpOnly; Secure; SameSite=Lax`.
+- **CSP with per-response script nonces** (`script-src 'self' 'nonce-…'`, no `unsafe-inline`), `frame-ancestors 'none'` + `X-Frame-Options: DENY` (clickjacking), `nosniff`, `no-referrer`, HSTS.
+- **XSS:** every user-controlled string (log text, replies, kiosk names, driver names, reasons, alert bodies) is HTML-escaped at render; the 3 previously unescaped sinks (remittance driver `<option>`, stock-alert action, CEO silent-site strip) are fixed.
+- **500 errors never leak stack traces** (logged server-side, generic message to client).
+- **Prototype-pollution guard** on `/api/config` (`__proto__`/`constructor`/`prototype` keys rejected).
+- **WhatsApp token is never echoed**: masked (`•••set•••`) in every API response; the admin field is write-only.
+- **Rate limits:** 240 req/min global per IP, 30/min per write endpoint, 20/min webhook, 8/min login attempts.
+- **Method hygiene:** only GET/POST accepted (405 otherwise); 1 MB body cap on all request bodies; static serving locked to the app directory with a strict path check.
+- **Constant-time comparisons** for the admin password and webhook token.
+- **SSRF: no attack surface** — the only outbound request is the Meta Graph API with a pinned host (`graph.facebook.com`); no user-controlled URLs anywhere.
+- **CSRF: double-blocked** — `SameSite=Lax` cookie + same-origin `Origin` check on every browser `POST /api/*` (cross-origin → 403). Non-browser clients (curl/cron/WhatsApp) send no Origin and are admin-gated + rate-limited.
+
+**Residual risks (honest list):** the admin password default (`hope2026`) ships in code and `render.yaml` — set `BAKEGUARD_ADMIN_PASS` in the environment and treat the repo value as compromised-adjacent. Sessions live in memory, so a redeploy asks everyone to log in again (by design). Login brute force is limited per-IP; an attacker rotating many IPs is not covered at this scale (the password itself is the last line).
 
 **Deploy checklist (Render):** set `WA_APP_SECRET` (Meta App Secret) and `BAKEGUARD_ADMIN_PASS`; optionally `WA_VERIFY_TOKEN`. Then enter the CEO + manager numbers in /admin **before** pointing the Meta webhook at the site — until then the webhook accepts nothing.

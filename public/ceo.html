@@ -94,7 +94,7 @@ async function render() {
   const delayed = Object.entries(s.spots || {}).filter(([, v]) => v && v.level === 'delayed').map(([c]) => c);
   const strip = `
   <div class="chip">⚙️ Scale-up readiness<b>${r.score == null ? '— awaiting first reports' : r.score + '/100 ' + (r.score >= 80 ? '· scale-ready' : r.score >= 60 ? '· watch' : '· fix first')}</b></div>
-  <div class="chip">📵 Silent at 10 PM<b>${blind.length ? blind.map(c => siteName(c)).join(', ') : delayed.length ? 'none (delayed: ' + delayed.map(c => siteName(c)).join(', ') + ')' : 'none'}</b></div>
+  <div class="chip">📵 Silent at 10 PM<b>${blind.length ? blind.map(c => esc(siteName(c))).join(', ') : delayed.length ? 'none (delayed: ' + delayed.map(c => esc(siteName(c))).join(', ') + ')' : 'none'}</b></div>
   <div class="chip">💰 Kiosk debt<b>${ghs(s.debtTotal)} ${s.debtOverdue ? '· ' + s.debtOverdue + ' overdue' : ''}</b></div>
   <div class="chip">🌅 Tomorrow (forecast)<b>${s.forecast.production ? fmt(s.forecast.production) + ' loaves' : '—'} ${s.forecast.cashGhs ? '· ' + ghs(s.forecast.cashGhs) : ''}</b></div>`;
 
